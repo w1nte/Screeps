@@ -39,7 +39,7 @@ module.exports.loop = function () {
 
     _.each(towers, (tower) => {
         let closestDamagedStructure = tower.pos.findClosestByRange(FIND_STRUCTURES, {
-            filter: (structure) => structure.structureType !== STRUCTURE_WALL && structure.hits < structure.hitsMax
+            filter: (structure) => !(structure.structureType === STRUCTURE_WALL && structure.hits > 10000) && !(structure.structureType === STRUCTURE_RAMPART && structure.hits > 10000) && structure.hits < structure.hitsMax
         });
 
         let closestHostile = tower.pos.findClosestByRange(FIND_HOSTILE_CREEPS);
@@ -56,5 +56,6 @@ module.exports.loop = function () {
 
     overlord.commandCreeps();
     overlord.clearDeadMemory();
+
 
 };
