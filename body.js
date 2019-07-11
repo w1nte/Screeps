@@ -31,6 +31,14 @@ let Body = {
 
             default: return this.harvester(0);
         }
+    },
+
+    builder(level) {
+        this.harvester(level);
+    },
+
+    upgrader(level) {
+        this.harvester(level);
     }
 
 };
