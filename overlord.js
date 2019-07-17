@@ -1,7 +1,9 @@
 let roles = require('roles');
-let body = require('body');
+let Body = require('body');
+
 
 let Overlord = {
+
     clearDeadMemory: function() {
         if (_.has(Memory, ["creeps"]))
             _.each(Object.keys(Memory.creeps), (creep) => {
@@ -17,18 +19,19 @@ let Overlord = {
     },
 
     setTimer(key, ticks) {
-        let lastTick = _.get(Memory, ["overlord", "timer", key, "lastTick"]);
+        let nextTick = _.get(Memory, ["overlord", "timer", key, "nextTick"]);
 
-        if (lastTick == null || Game.time >= (lastTick + ticks)) {
-            _.set(Memory, ["overlord", "timer", key, "lastTick"], Game.time);
-            _.set(Memory, ["overlord", "timer", key, "active"], true);
-        } else {
-            _.set(Memory, ["overlord", "timer", key, "active"], false);
+        if (nextTick == null || Game.time > nextTick) {
+            _.set(Memory, ["overlord", "timer", key, "nextTick"], Game.time + ticks);
         }
     },
 
+    getTimer(key) {
+        return _.get(Memory, ["overlord", "timer", key, "nextTick"], 0) - Game.time;
+    },
+
     isTimer(key) {
-        return _.has(Memory, ["overlord", "timer", key]) ? _.get(Memory, ["overlord", "timer", key, "active"]) : false;
+        return this.getTimer(key) === 0;
     },
 
     setCounter(key, reset) {
@@ -41,139 +44,212 @@ let Overlord = {
         }
     },
 
+    getCounter(key) {
+        return _.get(Memory, ["overlord", "counter", key, "c"], 0);
+    },
+
     spawnCreeps(spawn, creeps) {
-        let count = {'harvester': 0, 'upgrader': 0, 'builder': 0, 'carrier': 0, 'none': 0, 'longrange_harvester': 0};
-        for (let c in creeps) {
-            count[_.has(creeps[c], ["memory", "role"]) ? creeps[c].memory.role : 'none']++;
+
+        let request = [
+            ['harvester', 3],
+            ['upgrader', 1],
+            ['builder', 1]
+        ];
+
+        if (spawn.room.controller.level <= 4 && !spawn.room.storage && !Memory.overlord.emergency[spawn.room.name]) {
+            request = [
+                ['harvester', 3],
+                ['upgrader', 6],
+                ['builder', 1]
+            ];
+
+            if (spawn.room.controller.level === 4)
+                request[2][1] += 2;
         }
 
-        if (count.harvester < 3 && (count.carrier < 1 || count.upgrader < 1)) {
+        if (spawn.room.storage) {
+            request = [
+                ['carrier', 2, 0.5],
+                ['harvester', 3],
+                ['upgrader', 2, 0.5],
+                ['builder', 1, 1]
+            ];
+
+            if ((spawn.room.storage.store[RESOURCE_ENERGY] || 0) >= 100000) {
+                let constructionSites = spawn.room.find(FIND_CONSTRUCTION_SITES);
+                if (constructionSites.length > 0) {
+                    let progressRest = 0;
+                    _.each(constructionSites, (c) => {
+                        if (c.my)
+                            progressRest += c.progressTotal - c.progress;
+                    });
+
+                    if (progressRest >= 5000)
+                        request[3][1]++;
+
+                    if (progressRest >= 25000)
+                        request[3][1]++;
+
+                }
+            }
+
+            if (spawn.room.controller.level >= 7) {
+                request[0][1]++;
+            }
+
+            if (spawn.room.name === 'W7N3') {
+                request.push({
+                    'role': 'longrange_harvester',
+                    'number': 2,
+                    'memory': {
+                        'toHarvest': 'W7N4'
+                    },
+                    'consumption': 0.9
+                });
+                request[0][1]++;
+            }
+
+        }
+
+
+        let stock = {};
+        _.each(Game.creeps, (creep) => {
+            if (creep.my && _.get(creep, ['memory', 'home', 'name'], false) === spawn.room.name) {
+                let role = _.get(creep, ['memory', 'role'], 'none');
+                _.set(stock, [role], _.get(stock, [role], 0) + 1);
+            }
+        });
+
+        if ( (!spawn.room.storage && (stock.harvester || 0) < 3 && spawn.room.energyAvailable <= 300) ||
+            (spawn.room.storage && (stock.harvester || 0) <= 1 || (stock.carrier || 0) === 0) ) {
             _.set(Memory, ["overlord", "emergency", spawn.room.name], true);
         } else {
             delete Memory.overlord.emergency[spawn.room.name];
         }
 
-        if (Memory.overlord.emergency[spawn.room.name] && count.upgrader < 1) {
-            let newName = 'U' + Game.time;
-            spawn.spawnCreep([WORK, CARRY, MOVE], newName, {memory: {role: 'upgrader', home: spawn.room}});
+        if (!spawn.spawning) {
+            let prevSpawningCosts = 0;
+            _.each(request, (r) => {
+                let _role, n, _home, _consumption, _level, _body, _custom_memory = {};
+
+                if (Array.isArray(r)) { // see arguments here
+                    _role = r[0];
+                    n = _.get(r, [1], 1);
+                    _consumption = _.get(r, [2], 0.8);
+                    _level = _.get(r, [3], -1);
+                    _home = spawn.room;
+                } else if (r && typeof r === 'object' && r.constructor === Object) {
+                    _role = r.role;
+                    n = _.get(r, ['number'], 1);
+                    _home = _.get(r, ['home'], spawn.room);
+                    _body = _.get(r, ['bodyList'], null);
+                    _level = _.get(r, ['level'], -1);
+                    _consumption = _.get(r, ['consumption'], 0.8);
+                    _custom_memory = _.get(r, ['memory'], {});
+                }
+
+                if (Memory.overlord.emergency[spawn.room.name]) {
+                    _level = 0;
+                }
+
+                if (!_body) {
+                    let capacityEnergy = spawn.room.energyCapacityAvailable;
+                    let bodyFunc = _.get(Body, [_role], Body.default);
+
+                    if (_level !== -1) {
+                        _body = bodyFunc(_level);
+                    } else {
+                        let nextBody;
+
+                        for (let i = 0; i < 20; i++) {
+                            nextBody = bodyFunc(i);
+                            if (nextBody && Body.costs(nextBody) <= capacityEnergy * _consumption) {
+                                _body = nextBody;
+                            } else {
+                                break;
+                            }
+                        }
+                    }
+                }
+
+                if (_.get(stock, [_role], 0) < n) {
+                    let _name = _role.charAt(0).toUpperCase() + Game.time;
+                    let _memory = Object.assign({
+                        role: _role,
+                        home: _home
+                        }, _custom_memory);
+
+                    //console.log("spawn " + role + " in room " + spawn.room.name);
+
+                    let costs = Body.costs(_body);
+                    if ((costs + prevSpawningCosts) <= spawn.room.energyAvailable)
+                        spawn.spawnCreep(_body, _name, {memory: _memory});
+                    else
+                        prevSpawningCosts += costs;
+                }
+            });
         }
-
-        if (count.harvester < 3) {
-            let newName = 'H' + Game.time;
-            // 1800
-            spawn.spawnCreep([WORK, WORK, WORK, WORK, WORK, WORK, WORK, WORK, CARRY, CARRY, CARRY, CARRY, CARRY, CARRY, CARRY, CARRY, MOVE, MOVE, MOVE, MOVE], newName, {memory: {role: 'harvester', home: spawn.room}});
-
-            if (count.harvester <= 1) {
-                if (spawn.room.storage && spawn.room.storage.storeCapacity[RESOURCE_ENERGY] > 4000) {
-                    let newName = 'C' + Game.time;
-                    spawn.spawnCreep([WORK, MOVE, MOVE, CARRY, CARRY, CARRY, CARRY, MOVE, MOVE, MOVE, MOVE], newName, {memory: {role: 'carrier', home: spawn.room}});
-                } else
-                    spawn.spawnCreep([WORK, CARRY, MOVE], newName, {memory: {role: 'harvester', home: spawn.room}});
-            }
-
-        } else {
-            if (count.carrier < 2) {
-                let newName = 'C' + Game.time;
-                spawn.spawnCreep([WORK, MOVE, MOVE, CARRY, CARRY, CARRY, CARRY, CARRY, CARRY, MOVE, MOVE, MOVE, MOVE, MOVE, MOVE], newName, {memory: {role: 'carrier', home: spawn.room}});
-            } else {
-                if (count.upgrader < 3) {
-                    let newName = 'U' + Game.time;
-                    spawn.spawnCreep([WORK, WORK, WORK, WORK, WORK, CARRY, MOVE], newName, {memory: {role: 'upgrader', home: spawn.room}});
-                }
-
-                if (count.builder < 1) {
-                    let newName = 'B' + Game.time;
-                    spawn.spawnCreep([WORK, WORK, MOVE, CARRY, CARRY, CARRY, MOVE], newName, {memory: {role: 'builder', home: spawn.room}});
-                }
-
-                if (count.longrange_harvester < 0) {
-                    let newName = 'LH' + Game.time;
-                    spawn.spawnCreep([WORK, CARRY, CLAIM, MOVE, MOVE, MOVE, MOVE, MOVE, MOVE, MOVE, MOVE], newName, {memory: {role: 'longrange_harvester', home: spawn.room}});
-                }
-            }
-        }
-
 
     },
 
     commandCreeps() {
-        //console.log(body.costs(body.harvester(4)));
 
         this.setCounter("spawn", () => {
             return Game.spawns['Spawn1'].room.energyAvailable < Game.spawns['Spawn1'].room.energyCapacityAvailable;
         });
+
+
+        // let spawn = Game.spawns['Spawn1'];
+        // let stock = {};
+        // _.each(Game.creeps, (creep) => {
+        //     if (creep.my && _.get(creep, ['memory', 'home', 'name'], false) === spawn.room.name) {
+        //         let role = _.get(creep, ['memory', 'role'], 'none');
+        //         _.set(stock, [role], _.get(stock, [role], 0) + 1);
+        //     }
+        // });
+        //
+        // if ((stock.carrier || 0) >= 3)
+        //     spawn.spawnCreep([ATTACK, ATTACK, ATTACK, ATTACK, TOUGH, TOUGH, TOUGH, TOUGH, TOUGH, TOUGH, TOUGH, TOUGH,TOUGH, HEAL, MOVE, MOVE, MOVE, MOVE, MOVE, MOVE, MOVE, MOVE], 'attacker' + Game.time, {memory: {role: 'attacker', toAttack: 'W5N3', waitUntil: 8, home:  Game.spawns['Spawn1'].room}});
 
         this.setTimer("spawn", 10);
 
         for (let name in Game.spawns) {
 
             let spawn = Game.spawns[name];
+            let creeps = spawn.room.find(FIND_MY_CREEPS);
 
-            let minerals = spawn.room.find(FIND_SOURCES, {
-                filter: (source) => { return source.energy > 0; }
-            });
-            let creeps = spawn.room.find(FIND_CREEPS);
-            let creeps_harvester = spawn.room.find(FIND_CREEPS, {
-                filter: (creep) => { return _.has(creep, ["memory", "role"]) && creep.memory.role === 'harvester'; }
+            let towers = spawn.room.find(FIND_STRUCTURES, {
+                filter: (struct) => { return struct.structureType === STRUCTURE_TOWER }
             });
 
-            for (let id in creeps_harvester) {
-                let creep = creeps_harvester[id];
-                if (minerals.length > 0 && (!_.has(creep, ["memory", "source"]) || _.get(creep, ["memory", "source"]) === false)) {
-                    creep.memory.source = minerals[Math.floor(minerals.length / creeps_harvester.length * id)];
+            _.each(towers, (tower) => {
+                let closestDamagedStructure = tower.pos.findClosestByRange(FIND_STRUCTURES, {
+                    filter: (structure) => !(structure.structureType === STRUCTURE_WALL && structure.hits > 10000) && !(structure.structureType === STRUCTURE_RAMPART && structure.hits > 10000) && structure.hits < structure.hitsMax
+                });
+
+                let closestHostile = tower.pos.findClosestByRange(FIND_HOSTILE_CREEPS);
+
+                if (closestHostile) {
+                    tower.attack(closestHostile);
+                } else {
+                    if(closestDamagedStructure) {
+                        tower.repair(closestDamagedStructure);
+                    }
                 }
-            }
+            });
 
             if (this.isTimer("spawn")) {
                 this.spawnCreeps(spawn, creeps);
             }
 
-            //console.log(spawn.room.energyCapacityAvailable);
-
-            /*console.log(this.buildBody({
-                WORK: 0.8,
-                CARRY: 0.1,
-                MOVE: 0.1
-            }, 450));*/
-
         }
 
-        for (let id in Memory.creeps) {
+        for (let id in Game.creeps) {
             let creep = Game.creeps[id];
-            roles.run(creep);
+            if (creep.my)
+                roles.run(creep);
         }
 
-    },
-
-    buildBody(parts, energy) {
-        let BODY_PART_COSTS = {
-            MOVE: 50,
-            WORK: 100,
-            CARRY: 50,
-            ATTACK: 80,
-            RANGED_ATTACK: 150,
-            HEAL: 250,
-            TOUGH: 10,
-            CLAIM: 600
-        };
-        let r_total = 0;
-        let body = [];
-        let unused = 0;
-
-
-        _.each(parts, (r, part) => {
-            r_total += r;
-            if (r_total <= 1) {
-                let free = energy * r;
-                while (free >= BODY_PART_COSTS[part]) {
-                    body.push(part);
-                    free -= BODY_PART_COSTS[part];
-                }
-                unused += free;
-            }
-        });
-
-        return body;
     }
 };
 

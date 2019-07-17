@@ -4,17 +4,19 @@ let Roles = {
         let roles = {
             'harvester': this.harvester,
             'longrange_harvester': this.longrange_harvester,
+            'colonizer': this.colonizer,
             'builder': this.builder,
             'upgrader': this.upgrader,
             'carrier': this.carrier,
+            'attacker': this.attacker
         };
 
-        if(_.has(creep, ["memory", "role"])) {
-            var role = creep.memory.role;
+        if(creep !== undefined && !creep.spawning && _.has(creep, ["memory", "role"])) {
+            let role = _.get(creep, ["memory", "role"]);
             if (role in roles) {
                 roles[role](creep);
-            }
-        } else console.log("creep without role detected!");
+            } else Roles.harvester(creep);
+        } else if (_.has(creep, ["memory"])) Roles.harvester(creep);
     },
 
     _room(creep, room) {
@@ -22,23 +24,13 @@ let Roles = {
 
             let next_room = (room.name || room);
 
-            if (creep.pos.x === 49) {
-                creep.move(LEFT);
-            } else if (creep.pos.x === 0) {
-                creep.move(RIGHT);
-            } else if (creep.pos.y === 0) {
-                creep.move(BOTTOM);
-            } else if (creep.pos.y === 49) {
-                creep.move(TOP);
-            }
-
             if (creep.room.name !== next_room) {
 
                 creep.moveTo(
                     creep.pos.findClosestByRange(
                         creep.room.findExitTo(next_room)
                     )
-                );
+                , {maxRooms: 1});
 
                 return false;
             }
@@ -49,7 +41,10 @@ let Roles = {
     },
 
     _findSource(creep, room) {
-        if (room === undefined || typeof room === "string")
+        if (typeof room === "string")
+            room = _.get(Game.rooms, [room], undefined);
+
+        if (room === undefined)
             room = creep.room;
 
         let sources = room.find(FIND_SOURCES, {
@@ -58,7 +53,7 @@ let Roles = {
         return sources[Math.floor(Math.random() * sources.length)];
     },
 
-    harvester(creep, room) {
+    harvester(creep, room, ressource) {
 
         // -- switch state -------------------------------------
         if (creep.memory.harvesting === true && creep.carry.energy === creep.carryCapacity) {
@@ -78,7 +73,7 @@ let Roles = {
                 return;
 
             if (!creep.memory.source) {
-                creep.memory.source = Roles._findSource(creep, room);
+                creep.memory.source = Roles._findSource(creep, room, ressource);
             }
 
             if (_.has(creep.memory.source, ["id"])) {
@@ -87,7 +82,7 @@ let Roles = {
                 let harvest = creep.harvest(source);
 
                 if (harvest === ERR_NOT_IN_RANGE) {
-                    creep.moveTo(source, {visualizePathStyle: {stroke: '#ffaa00'}});
+                    creep.moveTo(source, {visualizePathStyle: {stroke: '#ffaa00'}, maxRooms: 1});
                 } else if (harvest === ERR_NOT_ENOUGH_RESOURCES) {
                     creep.memory.source = false;
                 }
@@ -98,13 +93,13 @@ let Roles = {
             // default value
             creep.memory.harvesting = false;
 
-            if (!Roles._room(creep, creep.memory.home || Game.spawns[Object.keys(Game.spawns)[0]].room))
+            if (!Roles._room(creep, creep.memory.home || creep.room))
                 return;
 
             if (creep.room.storage && !_.has(Memory, ["overlord", "emergency", creep.room.name])) {
 
                 if (creep.transfer(creep.room.storage, RESOURCE_ENERGY) === ERR_NOT_IN_RANGE) {
-                    creep.moveTo(creep.room.storage, {visualizePathStyle: {stroke: '#ffffff'}});
+                    creep.moveTo(creep.room.storage, {visualizePathStyle: {stroke: '#ffffff'}, maxRooms: 1});
                 }
 
             } else {
@@ -124,7 +119,7 @@ let Roles = {
 
                     let transfer = creep.transfer(target, RESOURCE_ENERGY);
                     if (transfer === ERR_NOT_IN_RANGE) {
-                        creep.moveTo(target, {visualizePathStyle: {stroke: '#ffffff'}});
+                        creep.moveTo(target, {visualizePathStyle: {stroke: '#ffffff'}, maxRooms: 1});
                     } else if (transfer === ERR_FULL) {
                         creep.memory.target = false;
                     }
@@ -134,7 +129,9 @@ let Roles = {
                     // if 10 ticks does nothing, then start upgrading
                     creep.memory.standby = (creep.memory.standby || 0) + 1;
                     if (creep.memory.standby > 10) {
-                        this.upgrader(creep, room);
+                        creep.memory.target = false;
+                        creep.memory.source = false;
+                        //return this.upgrader(creep, room);
                     }
                 }
 
@@ -143,8 +140,14 @@ let Roles = {
         }
     },
 
-    longrange_harvester(creep) {
-        let room = 'W8N3';
+    longrange_harvester(creep, room) {
+        room = _.get(creep, ['memory', 'toHarvest'], room);
+
+        return Roles.harvester(creep, room);
+    },
+
+    colonizer(creep, room) {
+        room = _.get(creep, ['memory', 'toColonize'], room);
 
         if (!Roles._room(creep, room))
             return;
@@ -153,13 +156,64 @@ let Roles = {
             if(creep.claimController(creep.room.controller) === ERR_NOT_IN_RANGE) {
                 creep.moveTo(creep.room.controller);
             }
+            return;
         }
 
-        targets = creep.room.find(FIND_CONSTRUCTION_SITES);
+        let targets = creep.room.find(FIND_CONSTRUCTION_SITES);
         if (targets.length > 0)
             Roles.builder(creep, room);
         else
             Roles.upgrader(creep, room);
+    },
+
+    attacker(creep, room) {
+        room = _.get(creep, ['memory', 'toAttack'], room);
+
+        if (creep.room.name === _.get(creep, ['memory', 'home', 'name']) && _.has(creep, ['memory', 'waitUntil'])) {
+            let i = 0;
+            _.each(creep.room.find(FIND_MY_CREEPS), (c) => {
+                if (_.get(c, ['memory', 'role']) === 'attacker' && _.get(c, ['memory', 'toAttack']) === (room || room.name))
+                    i++;
+            });
+            if (i <= creep.memory.waitUntil && creep.ticksToLive > 300) {
+                let flag = creep.room.find(FIND_FLAGS, {filter: (flag) => { return flag.color === COLOR_RED; }});
+                if (flag.length > 0)
+                    creep.moveTo(flag[0]);
+                return;
+            }
+            creep.memory.waitUntil = 0;
+        }
+
+        let closestStructure = creep.pos.findClosestByRange(FIND_HOSTILE_STRUCTURES, {filter: (struct) => { return struct.structureType === STRUCTURE_SPAWN || struct.structureType === STRUCTURE_TOWER; }});
+        let closestHostile = creep.pos.findClosestByRange(FIND_HOSTILE_CREEPS);
+
+        if(closestStructure && closestStructure.room.name === room) {
+            if (creep.attack(closestStructure) === ERR_NOT_IN_RANGE)
+                if (creep.moveTo(closestStructure, {maxRooms: 1}) === ERR_NO_PATH) {
+                    let wall = creep.pos.findClosestByRange(FIND_STRUCTURES);
+                    if (wall) {
+                        if (creep.attack(wall) === ERR_NOT_IN_RANGE)
+                            creep.moveTo(wall, {maxRooms: 1});
+                    }
+                }
+            return;
+        }
+
+        if (closestHostile) {
+            if (creep.attack(closestHostile) === ERR_NOT_IN_RANGE)
+                creep.moveTo(closestHostile, {maxRooms: 1});
+            else if(closestStructure) {
+                if (creep.attack(closestStructure) === ERR_NOT_IN_RANGE)
+                    creep.moveTo(closestStructure, {maxRooms: 1});
+            }
+            return;
+        }
+
+        if (!Roles._room(creep, room)) {
+            if (creep.hits <= creep.hitsMax)
+                creep.heal(creep);
+        }
+
     },
 
     builder(creep, room) {
@@ -196,11 +250,15 @@ let Roles = {
                     if (creep.transfer(creep.room.storage, RESOURCE_ENERGY) === ERR_NOT_IN_RANGE) {
                         creep.moveTo(creep.room.storage, {visualizePathStyle: {stroke: '#ffffff'}});
                     }
+            } else {
+
+                return Roles.carrier(creep, room);
             }
         }
         else {
             let container = creep.pos.findClosestByRange(FIND_STRUCTURES, {
-                filter: (structure) => { return structure.structureType === STRUCTURE_CONTAINER
+                filter: (structure) => { return ( structure.structureType === STRUCTURE_CONTAINER ||
+                    structure.structureType === STRUCTURE_STORAGE)
                     && structure.store[RESOURCE_ENERGY] > creep.carryCapacity; }
             });
 
@@ -229,6 +287,8 @@ let Roles = {
     },
 
     upgrader(creep, room) {
+        if (_.has(Memory, ["overlord", "emergency", creep.room.name]))
+            return Roles.harvester(creep, room);
 
         if(creep.memory.upgrading && creep.carry.energy === 0) {
             creep.memory.upgrading = false;
@@ -354,13 +414,14 @@ let Roles = {
         let storage = creep.room.storage;
 
         if (!storage)
-            return this.harvester();
+            return Roles.harvester(creep);
 
         let target = creep.pos.findClosestByRange(FIND_STRUCTURES, {
             filter: (structure) => { return ((
                     structure.structureType === STRUCTURE_EXTENSION ||
                     structure.structureType === STRUCTURE_SPAWN ||
-                    structure.structureType === STRUCTURE_TOWER
+                    structure.structureType === STRUCTURE_TOWER ||
+                    structure.structureType === STRUCTURE_LINK
                 ) && structure.energy < structure.energyCapacity) ||
                 (structure.structureType === STRUCTURE_CONTAINER
                 ) && structure.store[RESOURCE_ENERGY] < structure.storeCapacity; }

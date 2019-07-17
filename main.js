@@ -1,15 +1,20 @@
 let overlord = require('overlord');
+let Spawn = require('spawn');
+let Util = require('util');
 
-var BODY_PART_COSTS = {
-    'MOVE': 50,
-    'WORK': 100,
-    'CARRY': 50,
-    'ATTACK': 80,
-    'RANGED_ATTACK': 150,
-    'HEAL': 250,
-    'TOUGH': 10,
-    'CLAIM': 600
-};
+
+Object.assign(exports, {
+    BODY_PART_COSTS: {
+        MOVE: 50,
+        WORK: 100,
+        CARRY: 50,
+        ATTACK: 80,
+        RANGED_ATTACK: 150,
+        HEAL: 250,
+        TOUGH: 10,
+        CLAIM: 600
+    }
+});
 
 let structurePriority = function(struct) {
     switch (struct) {
@@ -24,6 +29,8 @@ module.exports.loop = function () {
     Game.spawns['Spawn1'].room.visual.text("My Colony", 2, 1, {color: 'white', font: 0.8});
 
 
+
+
     // let s = Game.spawns['Spawn1'].room.find(FIND_STRUCTURES, {filter: (struct) => { return (struct.structureType === STRUCTURE_TOWER
     //         || struct.structureType === STRUCTURE_EXTENSION) && struct.energy && struct.energy < struct.energyCapacity;}});
     //
@@ -33,29 +40,29 @@ module.exports.loop = function () {
     // }
     // console.log();
 
-    let towers = Game.spawns['Spawn1'].room.find(FIND_STRUCTURES, {
-        filter: (struct) => { return struct.structureType === STRUCTURE_TOWER }
-    });
-
-    _.each(towers, (tower) => {
-        let closestDamagedStructure = tower.pos.findClosestByRange(FIND_STRUCTURES, {
-            filter: (structure) => !(structure.structureType === STRUCTURE_WALL && structure.hits > 10000) && !(structure.structureType === STRUCTURE_RAMPART && structure.hits > 10000) && structure.hits < structure.hitsMax
-        });
-
-        let closestHostile = tower.pos.findClosestByRange(FIND_HOSTILE_CREEPS);
-
-        if (closestHostile) {
-            tower.attack(closestHostile);
-        } else {
-            if(closestDamagedStructure) {
-                tower.repair(closestDamagedStructure);
-            }
-        }
-    });
-
-
     overlord.commandCreeps();
     overlord.clearDeadMemory();
 
+    let mods = [];
+
+    let overlord2 = new Spawn.Overlord({
+        w8n3: {
+
+        }
+    });
+
+    mods.push(overlord2);
+    _.each(Game.rooms, (room) => {
+        if (room.controller && room.controller.my) {
+            mods.push(new Spawn.Hive(room));
+            mods.push(new Spawn.SpawnMod(room));
+        }
+    });
+
+    let balancer = new Util.Balancer(mods);
+
+    // _.each(mods, (mod) => {
+    //     mod.clearMemory();
+    // });
 
 };
