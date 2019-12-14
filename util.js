@@ -1,7 +1,7 @@
 'use strict';
 
-/*
-    Super Class that makes persistent classes easier.
+/**
+ * Super Class that makes persistent classes easier.
  */
 class D {
     constructor(memoryLocation) {
@@ -38,8 +38,8 @@ class D {
     }
 }
 
-/*
-   Mod that can executed by ModRunner
+/**
+ * Mod class that can be executed by ModRunner
  */
 class Mod extends D {
     constructor(memoryLocation, options) {
@@ -47,16 +47,29 @@ class Mod extends D {
 
         this.options = assignOptions(options, {
             sleep: 1,
+            offset: 0, // sleep offset
             requires: []
         });
 
+        this.balancer = null;
         this.sleep = this.options.sleep;
         this.memory.lastRun = this._get("lastRun", 0);
         if (!this.memory.id)
-            this._set("id", Game.time);
+            this._set("id", Game.time); // TODO: doesnt make sense, change it
     }
 
-    // return priority of the process
+    /**
+     * Is called by the balancer at begin
+     * @returns {number}
+     */
+    init() {
+        return 0;
+    }
+
+    /**
+     * Returns the priority of a mod. Should be overwritten by the child class
+     * @returns {number}
+     */
     static priority() {
         return 50;
     }
@@ -65,17 +78,25 @@ class Mod extends D {
         return this.memory.id;
     }
 
+    /**
+     * Function that is called by the balancer, must be overwritten by the child class
+     * @param balancer
+     */
     run(balancer) {
         throw new Error("run isn't implemented yet!");
     }
 
+    /**
+     * Returns if the mod is sleeping. If yes, then the mod will not be executed by the balancer
+     * @returns {boolean}
+     */
     isSleeping() {
-        return (Game.time - this.memory.lastRun) < this.sleep;
+        return (Game.time + this.options.offset - this.memory.lastRun) < this.sleep;
     }
 }
 
-/*
-    The Balancer runs all Processes dependent on the cpu usage
+/**
+ *  The Balancer runs all Mods. The Object instantly works if it is created.
  */
 class Balancer extends D {
     constructor(mods) {
@@ -87,18 +108,32 @@ class Balancer extends D {
         this.mods = mods;
         this.mods.sort((a, b) => a.constructor.priority() - b.constructor.priority());
         //TODO: implement requires
+        this.mods.map((mod) => { mod.balancer = this; mod.init(); });
 
         this._run();
     }
 
+    /**
+     * Return a list of all mods (in priority order).
+     * @param filter String of the Modclass or filter function
+     * @returns {*[]}
+     */
     getMods(filter) {
         let mods = [].concat(this.mods);
+
+        if (isString(filter))
+            return mods.filter((mod) => { return mod.constructor.name === filter; });
+
         if (typeof filter === 'function')
             return mods.filter(filter);
 
         return mods;
     }
 
+    /**
+     * Runs all the mods in priority order
+     * @private
+     */
     _run() {
         let total_executing_time = 0;
         _.each(this.mods, (process) => {
@@ -111,6 +146,15 @@ class Balancer extends D {
             }
         });
         console.log("Total executing time: " + total_executing_time + "ms!");
+    }
+
+    clearMemory() {
+        if (_.has(Memory, [this.memoryLocation[0]]))
+            delete Memory[this.memoryLocation[0]];
+
+        _.each(this.mods, (process) => {
+            process.clearMemory();
+        });
     }
 }
 
@@ -125,4 +169,53 @@ let isString = (variable) => {
     return variable instanceof String || typeof variable === 'string';
 };
 
-module.exports = {D, Mod, Balancer, isString, assignOptions};
+let clearDeadMemory = () => {
+    if (_.has(Memory, ["creeps"]))
+        _.each(Object.keys(Memory.creeps), (creep) => {
+            if (!_.has(Game, ["creeps", creep]))
+                delete Memory.creeps[creep];
+        });
+
+    if (_.has(Memory, ["rooms"]))
+        _.each(Object.keys(Memory.rooms), (room) => {
+            if (!_.has(Game, ["rooms", room]))
+                delete Memory.rooms[room];
+        });
+};
+
+let setTimer = (key, ticks) => {
+    let nextTick = _.get(Memory, ["overlord", "timer", key, "nextTick"]);
+
+    if (nextTick == null || Game.time > nextTick) {
+        _.set(Memory, ["overlord", "timer", key, "nextTick"], Game.time + ticks);
+    }
+};
+
+let getTimer = (key) => {
+    return _.get(Memory, ["overlord", "timer", key, "nextTick"], 0) - Game.time;
+};
+
+let isTimer = (key) => {
+    return this.getTimer(key) === 0;
+};
+
+let timer = (key, ticks) => {
+    setTimer(key, ticks);
+    return getTimer(key);
+};
+
+let setCounter = (key, reset) => {
+    let lastCount = _.get(Memory, ["overlord", "counter", key, "c"]);
+
+    if (lastCount == null || reset() === true) {
+        _.set(Memory, ["overlord", "counter", key, "c"], 0);
+    } else {
+        _.set(Memory, ["overlord", "counter", key, "c"], ++lastCount);
+    }
+};
+
+let getCounter = (key) => {
+    return _.get(Memory, ["overlord", "counter", key, "c"], 0);
+};
+
+module.exports = {D, Mod, Balancer, isString, assignOptions, clearDeadMemory, setCounter, setTimer, getTimer, isTimer, getCounter, timer};
